@@ -47,6 +47,26 @@ print(json.dumps({'namespaces': ns,
  }, sort_keys=True))'''
 
 
+# R4: real TNG R2/R3 showed Bubblewrap still supplies PWD=/work even after
+# --unsetenv PWD and independent of --chdir ordering. Keep the *strict* P7
+# four-key rule at the actual fixture process boundary. A knowledge-free first
+# Python stage refuses every unapproved or incorrectly valued key, then
+# execve()s ONLY the same /usr/bin/python3 with exactly four approved keys.
+# This is not a native agent launch; no credential/project reads or shell.
+BOOTSTRAP_CODE = r'''import os, sys
+allowed = {'HOME': '/home/synthetic', 'TMPDIR': '/tmp', 'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'}
+seen = dict(os.environ)
+if len(sys.argv) != 4 or os.getcwd() != '/work':
+    raise SystemExit(73)
+if seen not in (allowed, dict(allowed, PWD='/work')):
+    raise SystemExit(74)
+# Keep the existing probe's own dict(os.environ)==allowed check UNCHANGED.
+# /usr/bin/python3 alone is permitted; no shell, env executable or host agent.
+os.execve('/usr/bin/python3', ['/usr/bin/python3', '-I', '-S', '-c',
+                               sys.argv[3], sys.argv[1], sys.argv[2]], allowed)
+'''
+
+
 class HermeticPreflightError(ValueError):
     """Invalid plan, execution mode or synthetic bwrap contract."""
 
@@ -106,11 +126,16 @@ def manifest(host: str) -> dict[str, Any]:
 
 
 def _mounts() -> list[str]:
-    """System mount recipe for Python fixture, never native host mounts."""
+    """System mount recipe for Python fixture, never native host mounts.
+
+    Bubblewrap --clearenv preserves PWD: explicitly remove it to enforce
+    the existing exact four-variable allowlist. No environment relaxation.
+    """
     if not Path(BWRAP).is_file() or not Path(PYTHON).is_file():
         raise HermeticPreflightError('synthetic dependencies unavailable')
     args = [BWRAP, '--unshare-all', '--die-with-parent', '--new-session',
-            '--cap-drop', 'ALL', '--clearenv', '--ro-bind', '/usr', '/usr']
+            '--cap-drop', 'ALL', '--clearenv', '--unsetenv', 'PWD',
+            '--ro-bind', '/usr', '/usr']
     # Ubuntu may use /bin -> usr/bin, /lib -> usr/lib, etc. Only known paths.
     allowed = {'/bin': ('usr/bin',), '/sbin': ('usr/sbin',),
                '/lib': ('usr/lib',), '/lib64': ('usr/lib64',)}
@@ -172,8 +197,8 @@ def preflight(host: str, *, execute_fixture: bool = False) -> dict[str, Any]:
             original_home = str(Path.home())
             if original_home == '/home/synthetic':
                 return result
-            cmd = args + ['--', PYTHON, '-I', '-S', '-c', PROBE_CODE,
-                          original_home, str(canary)]
+            cmd = args + ['--', PYTHON, '-I', '-S', '-c', BOOTSTRAP_CODE,
+                          original_home, str(canary), PROBE_CODE]
             proc = subprocess.run(cmd, capture_output=True, timeout=FIXTURE_TIMEOUT_SECONDS,
                                   env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'}, check=False)
             if proc.returncode != 0 or proc.stderr or len(proc.stdout) > 4096:

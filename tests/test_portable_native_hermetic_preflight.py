@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import patch
 
 from knowledge_forge.portable_native_hermetic_preflight import (
-    BWRAP, PYTHON, PROBE_CODE, STATUS_BLOCKED, STATUS_PASS,
+    BWRAP, PYTHON, BOOTSTRAP_CODE, PROBE_CODE, STATUS_BLOCKED, STATUS_PASS,
     HermeticPreflightError, _check_receipt, main, manifest, preflight,
 )
 from knowledge_forge.portable_native_sandbox_contract import PROOF_GATES
@@ -84,6 +84,90 @@ class P7HermeticTests(unittest.TestCase):
         self.assertNotIn('/home/tommy', cmd)
         self.assertNotIn('codex', cmd)
         self.assertNotIn('claude', cmd)
+
+    def test_clearenv_explicitly_unsets_preserved_pwd_before_mounts(self):
+        """bwrap documents that --clearenv retains PWD unless --unsetenv removes it."""
+        from knowledge_forge import portable_native_hermetic_preflight as mod
+        with patch.object(mod.Path, 'is_file', return_value=True), \
+             patch.object(mod.Path, 'is_symlink', return_value=False), \
+             patch.object(mod.Path, 'is_dir', return_value=False):
+            cmd = mod._mounts()
+        index = cmd.index('--clearenv')
+        self.assertEqual(cmd[index+1:index+3], ['--unsetenv', 'PWD'])
+        self.assertEqual(cmd.count('--clearenv'), 1)
+        self.assertEqual(cmd.count('--unsetenv'), 1)
+        self.assertEqual(cmd.count('--setenv'), 4)
+        self.assertNotIn('PWD', cmd[cmd.index('--setenv')+1:])
+        self.assertNotIn('--share-net', cmd)
+        self.assertNotIn('--bind', cmd)
+        self.assertIn('--unshare-all', cmd)
+
+    def test_fixture_refuses_extra_pwd_in_the_environment(self):
+        """No fallback accepting PWD; the original exact four-key rule stands."""
+        parent={'net': 101, 'mnt': 202, 'pid': 303}
+        record=good_fixture(parent)
+        record['scrubbed_environment']=False
+        self.assertFalse(_check_receipt(record, parent))
+        from knowledge_forge import portable_native_hermetic_preflight as mod
+        completed=subprocess.CompletedProcess(['bwrap'],0,
+                         stdout=json.dumps(record).encode(), stderr=b'')
+        with patch.object(mod,'_mounts',return_value=[BWRAP,'--clearenv', '--unsetenv', 'PWD']), \
+             patch.object(mod.subprocess,'run',return_value=completed):
+            result=preflight('codex-cli',execute_fixture=True)
+        self.assertEqual(result['state'], STATUS_BLOCKED)
+        self.assertEqual(result['native_runtime_gates_proven'], 0)
+        self.assertFalse(result['native_launch_authorized'])
+        self.assertNotIn('synthetic_receipt',result)
+
+    def test_r4_bootstrap_reexecs_same_python_with_exact_four_variables(self):
+        from unittest.mock import patch
+        allowed={'HOME':'/home/synthetic','TMPDIR':'/tmp','PATH':'/usr/bin:/bin','LANG':'C.UTF-8'}
+        for initial in (allowed, dict(allowed, PWD='/work')):
+            with self.subTest(initial=sorted(initial)), \
+                 patch.dict(os.environ, initial, clear=True), \
+                 patch('os.getcwd', return_value='/work'), \
+                 patch.object(sys,'argv',['-c','/home/tommy','/tmp/fakecanary',PROBE_CODE]), \
+                 patch('os.execve', side_effect=RuntimeError('REEXEC_SEEN')) as go:
+                with self.assertRaisesRegex(RuntimeError,'REEXEC_SEEN'):
+                    exec(compile(BOOTSTRAP_CODE, '<p7-r4-bootstrap>', 'exec'), {'__name__':'__main__'})
+                go.assert_called_once_with('/usr/bin/python3',
+                  ['/usr/bin/python3','-I','-S','-c',PROBE_CODE,'/home/tommy','/tmp/fakecanary'], allowed)
+                self.assertNotIn('PWD',go.call_args.args[2])
+
+    def test_r4_bootstrap_refuses_extra_or_wrong_environment_before_exec(self):
+        allowed={'HOME':'/home/synthetic','TMPDIR':'/tmp','PATH':'/usr/bin:/bin','LANG':'C.UTF-8'}
+        variants=(dict(allowed, PWD='/wrong'), dict(allowed, CREDENTIAL='synthetic-canary'),
+                  dict(allowed, PWD='/work', EXTRA='forbidden'), dict(allowed, HOME='/home/tommy'),
+                  {'PATH':'/usr/bin:/bin','LANG':'C.UTF-8'})
+        for initial in variants:
+            with self.subTest(names=sorted(initial)), \
+                 patch.dict(os.environ, initial, clear=True), \
+                 patch('os.getcwd', return_value='/work'), \
+                 patch.object(sys,'argv',['-c','/home/tommy','/tmp/canary',PROBE_CODE]), \
+                 patch('os.execve', side_effect=AssertionError('must not exec')) as go:
+                with self.assertRaises(SystemExit):
+                    exec(compile(BOOTSTRAP_CODE, '<p7-r4-bootstrap>', 'exec'), {'__name__':'__main__'})
+                go.assert_not_called()
+
+    def test_r4_bootstrap_refuses_wrong_cwd_or_arguments(self):
+        allowed={'HOME':'/home/synthetic','TMPDIR':'/tmp','PATH':'/usr/bin:/bin','LANG':'C.UTF-8','PWD':'/work'}
+        for cwd, argv in (('/', ['-c','/home/tommy','/tmp/canary',PROBE_CODE]),
+                          ('/work',['-c','/home/tommy']),
+                          ('/work',['-c','/home/tommy','/tmp/canary',PROBE_CODE,'extra'])):
+            with self.subTest(cwd=cwd, argc=len(argv)), \
+                 patch.dict(os.environ, allowed, clear=True), \
+                 patch('os.getcwd', return_value=cwd), \
+                 patch.object(sys,'argv',argv), \
+                 patch('os.execve', side_effect=AssertionError('must not exec')) as go:
+                with self.assertRaises(SystemExit):
+                    exec(compile(BOOTSTRAP_CODE, '<p7-r4-bootstrap>', 'exec'), {'__name__':'__main__'})
+                go.assert_not_called()
+
+    def test_r4_original_probe_keeps_strict_four_key_enforcement(self):
+        self.assertIn("'scrubbed_environment': dict(os.environ) == allowed_env", PROBE_CODE)
+        self.assertIn("os.execve('/usr/bin/python3'", BOOTSTRAP_CODE)
+        self.assertNotIn('subprocess',BOOTSTRAP_CODE)
+        self.assertNotIn('shell',BOOTSTRAP_CODE.lower().replace('no shell',''))
 
     def test_unknown_system_link_is_refused_not_host_escape(self):
         from knowledge_forge import portable_native_hermetic_preflight as mod
@@ -157,6 +241,8 @@ class P7HermeticTests(unittest.TestCase):
         self.assertEqual(command[0],BWRAP)
         self.assertIn(PYTHON,command)
         self.assertIn(PROBE_CODE,command)
+        self.assertIn(BOOTSTRAP_CODE,command)
+        self.assertEqual(command[command.index('--')+1], PYTHON)
         self.assertNotIn('codex',command)
         self.assertNotIn('claude',command)
         self.assertEqual(runner.call_args.kwargs['env'],{'PATH':'/usr/bin:/bin','LANG':'C.UTF-8'})
