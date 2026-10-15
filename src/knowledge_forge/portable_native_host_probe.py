@@ -1,6 +1,6 @@
 """P3D-P4-P1-P0: passive native version inventory and synthetic hook boundary replay.
 
-NEVER installs hooks, reads host settings, calls a model, or attests to native
+NEVER installs hooks or calls a model; cannot independently attest to native
 UserPromptSubmit dispatch. Exit-2 blocking semantics are documented assumptions,
 not observations from a running host. This module is NOT a hook command.
 """
@@ -26,7 +26,7 @@ class NativeHostProbeError(ValueError):
 
 
 def native_version(host: str, *, binary: str | None = None) -> dict[str, Any]:
-    """Invoke --version only, under isolated HOME/XDG/CODEX/Claude dirs.
+    """Invoke --version only, under an allowlisted environment and temporary dirs.
 
     Does not establish that lifecycle hooks are supported or dispatched. A
     binary may ignore isolation environment variables: no host sessions run.
@@ -41,20 +41,21 @@ def native_version(host: str, *, binary: str | None = None) -> dict[str, Any]:
         raise NativeHostProbeError("host executable path refused")
     with TemporaryDirectory(prefix="kf-native-version-") as scratch:
         import os
-        env = os.environ.copy()
-        # Do not pass a user's session or knowledge configuration through env.
-        for key in list(env):
-            if key.startswith(("ANTHROPIC_", "OPENAI_", "CODEX_", "CLAUDE_")):
-                env.pop(key, None)
-        env.update({
+        # Construct an ALLOWLIST, never copy the caller's credential-bearing
+        # process environment. PATH is retained only for shebang runtimes such
+        # as /usr/bin/env node; it is not a filesystem or process sandbox.
+        env = {
+            "PATH": os.environ.get("PATH", os.defpath),
             "HOME": scratch,
             "XDG_CONFIG_HOME": str(Path(scratch) / "config"),
             "XDG_DATA_HOME": str(Path(scratch) / "data"),
             "XDG_CACHE_HOME": str(Path(scratch) / "cache"),
             "CODEX_HOME": str(Path(scratch) / "codex"),
             "CLAUDE_CONFIG_DIR": str(Path(scratch) / "claude"),
+            "TMPDIR": scratch,
             "CI": "1", "NO_COLOR": "1",
-        })
+            "LANG": "C.UTF-8",
+        }
         try:
             done = subprocess.run(
                 [str(command), "--version"], cwd=scratch, env=env,
@@ -75,10 +76,10 @@ def native_version(host: str, *, binary: str | None = None) -> dict[str, Any]:
     return {
         "host": host,
         "version": match.group(0),
-        "probe": "SANDBOXED_VERSION_FLAG_ONLY",
+        "probe": "ISOLATED_ENV_VERSION_FLAG_ONLY",
         "native_hook_dispatched": False,
-        "native_host_settings_read": False,
-        "native_host_settings_written": False,
+        "native_host_settings_read_verified": False,
+        "native_host_settings_write_protection_verified": False,
         "version_is_hook_capability_attestation": False,
     }
 

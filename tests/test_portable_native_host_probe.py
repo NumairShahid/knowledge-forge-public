@@ -28,6 +28,13 @@ class NativeHostProbeTests(unittest.TestCase):
             "assert os.environ['CLAUDE_CONFIG_DIR'].startswith(os.environ['HOME'])\n"
             "assert 'OPENAI_API_KEY' not in os.environ\n"
             "assert 'ANTHROPIC_API_KEY' not in os.environ\n"
+            "assert 'GH_TOKEN' not in os.environ\n"
+            "assert 'GITHUB_TOKEN' not in os.environ\n"
+            "assert 'AWS_SECRET_ACCESS_KEY' not in os.environ\n"
+            "assert 'AZURE_API_KEY' not in os.environ\n"
+            "assert 'CUSTOM_SECRET_SENTINEL' not in os.environ\n"
+            "assert 'PYTHONPATH' not in os.environ\n"
+            "assert 'NODE_OPTIONS' not in os.environ\n"
             f"sys.stdout.write({text!r})\n"
             f"sys.exit({exit_code})\n",
             encoding="utf-8",
@@ -52,6 +59,26 @@ class NativeHostProbeTests(unittest.TestCase):
             with patch.dict(os.environ, {"OPENAI_API_KEY": "test-never-use", "ANTHROPIC_API_KEY": "fake"}):
                 result = native_version("codex-cli", binary=binary)
             self.assertEqual(result["version"], "0.161.0")
+
+    def test_unrelated_secrets_and_loader_options_never_inherited(self):
+        with TemporaryDirectory() as temp:
+            binary = self._fake_host(temp, "2.1.296 (Claude Code)\n")
+            secret_env = {
+                "GH_TOKEN": "private-gh-canary",
+                "GITHUB_TOKEN": "private-github-canary",
+                "AWS_SECRET_ACCESS_KEY": "private-aws-canary",
+                "AZURE_API_KEY": "private-azure-canary",
+                "CUSTOM_SECRET_SENTINEL": "private-custom-canary",
+                "PYTHONPATH": "/nonexistent/injection/path",
+                "NODE_OPTIONS": "--no-warnings",
+            }
+            with patch.dict(os.environ, secret_env):
+                result = native_version("claude-code", binary=binary)
+            self.assertEqual(result["probe"], "ISOLATED_ENV_VERSION_FLAG_ONLY")
+            self.assertIs(result["native_host_settings_read_verified"], False)
+            self.assertIs(result["native_host_settings_write_protection_verified"], False)
+            self.assertNotIn("native_host_settings_read", result)
+            self.assertNotIn("native_host_settings_written", result)
 
     def test_bad_host_paths_versions_refuse(self):
         with self.assertRaises(NativeHostProbeError):

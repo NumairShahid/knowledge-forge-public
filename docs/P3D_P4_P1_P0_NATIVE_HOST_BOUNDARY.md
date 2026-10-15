@@ -14,6 +14,19 @@ Official sources checked October 15, 2026:
 - Replays the **Knowledge Forge** P4-P0 Python bridge as a subprocess twice for each synthetic `OFF`, missing-mapping `DRY_RUN`, and `ON` event; confirms output is empty, `OFF` succeeds, refusal returns 2, and no synthetic prompt canary leaks. No real host prompt is dispatched.
 - Returns `safe_to_activate_hooks=false`, `native_dispatch_verified=false`, `host_configuration_modified=false`. No settings files opened, edited, created, or merged; no MCP installation or hook registration. This is deliberately incompatible with claiming automatic retrieval or host attestation.
 
+## R1 environment and evidence precision
+
+The native `--version` subprocess receives an **explicit environment allowlist**,
+not the user's inherited shell environment. This excludes unrelated secrets such
+as `GH_TOKEN`, `AWS_SECRET_ACCESS_KEY`, user-specific Python/Node loader options,
+and unknown future credential names. `PATH` remains inherited for interpreter
+resolution, so this is **environment isolation, not an OS process sandbox**.
+A native executable can still attempt other filesystem or network access;
+`--version` is **not** proof that preexisting user settings were unread or
+unmodified. The report now uses `native_host_settings_read_verified=false` and
+`native_host_settings_write_protection_verified=false` instead of asserting
+unobserved `read=false` and `written=false`. No hook, model, or registry activation.
+
 ## Guardrail before P4-P1-P1
 
 A later **separately approved** isolated live-host test must verify configuration discovery and trust review, which hooks run on the current versions, exit-2 rejection, zero-output success, duplicate/replay behavior, stderr visibility, and whether project/user/plugin hooks combine. It needs temporary test HOME, temporary empty project, explicit knowledge-free synthetic prompt, no inherited user host config or secrets, and a cleanup/reconciliation receipt. Even that test will not authenticate promotion or permit automatic injection. Do not run a real Claude or Codex session or change user host configuration in this cut.
