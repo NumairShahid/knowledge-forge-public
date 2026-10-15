@@ -11,7 +11,7 @@ import unittest
 
 from knowledge_forge.portable_delivery_preview import (
     CONTEXT_FIELDS, MAX_TOTAL_JSON_BYTES, MAX_UNIT_CHARS,
-    PortableDeliveryError, preview,
+    PortableDeliveryError, preview, main, _result, _serialize_stdout,
 )
 from knowledge_forge.registry import create_skill_registry
 from tests.test_temporal_integration import _temporal_package
@@ -187,6 +187,103 @@ class PortableDeliveryTests(unittest.TestCase):
             capture_output=True, text=True, timeout=10)
         self.assertEqual(run.returncode, 2)
         self.assertIn("delivery preview refused", run.stderr)
+
+
+    def test_wire_serializer_canonical_utf8_and_final_lf(self):
+        payload = {"message": "frogs 🐸", "nested": {"tag": "café"}}
+        actual = _serialize_stdout(payload)
+        expected = (json.dumps(payload, sort_keys=True, indent=2,
+                               ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
+        self.assertEqual(actual, expected)
+        self.assertTrue(actual.endswith(b"\n"))
+        self.assertGreater(len(actual), len(actual.decode("utf-8")))
+
+    def test_preview_refuses_if_compact_json_fits_but_actual_wire_does_not(self):
+        from unittest.mock import patch
+        with TemporaryDirectory() as folder:
+            package, registry, *_ = self._fixture(folder)
+            kwargs = dict(mode="PREVIEW", host="claude-code", question=QUESTION,
+                          world_as_of=AS_OF, registry_supplier=lambda: registry,
+                          package_resolver=lambda *_: str(package))
+            actual = preview(**kwargs)
+            compact = len(json.dumps(actual, ensure_ascii=False,
+                                     sort_keys=True, allow_nan=False).encode("utf-8"))
+            wire = len(_serialize_stdout(actual))
+            self.assertGreater(wire, compact)
+            with patch("knowledge_forge.portable_delivery_preview.MAX_TOTAL_JSON_BYTES", compact):
+                with self.assertRaises(PortableDeliveryError):
+                    preview(**kwargs)
+
+    def test_cli_actual_bytes_bound_and_unicode_for_both_hosts(self):
+        from unittest.mock import patch
+        from io import BytesIO, StringIO
+        from contextlib import redirect_stderr
+        class StdoutBytes:
+            def __init__(self):
+                self.buffer = BytesIO()
+        for host in ("claude-code", "codex-cli"):
+            with self.subTest(host=host):
+                payload = _result(host, "PREVIEW", "UNTRUSTED_DATA_PREVIEW_ONLY",
+                                  "question 🐸", [{"content": "evidence 🐸"}])
+                output = StdoutBytes()
+                with patch("knowledge_forge.portable_delivery_preview.preview", return_value=payload):
+                    with patch.object(sys, "stdout", output), redirect_stderr(StringIO()):
+                        code = main(["--mode", "OFF", "--host", host])
+                self.assertEqual(code, 0)
+                self.assertEqual(output.buffer.getvalue(), _serialize_stdout(payload))
+                self.assertLessEqual(len(output.buffer.getvalue()), MAX_TOTAL_JSON_BYTES)
+                self.assertEqual(json.loads(output.buffer.getvalue())["tool_grants"], [])
+
+    def test_compact_pass_pretty_oversize_refuses_atomically(self):
+        from unittest.mock import patch
+        from io import BytesIO, StringIO
+        from contextlib import redirect_stderr
+        class StdoutBytes:
+            def __init__(self):
+                self.buffer = BytesIO()
+        item = {"content": "PRIVATE KNOWLEDGE MUST NOT LEAK 🐸",
+                "source_bindings": [{"source_id": str(i), "status": "OK"}
+                                    for i in range(550)]}
+        payload = _result("claude-code", "PREVIEW", "UNTRUSTED_DATA_PREVIEW_ONLY",
+                          QUESTION, [item])
+        compact = len(json.dumps(payload, sort_keys=True, ensure_ascii=False,
+                                 allow_nan=False).encode("utf-8"))
+        wire = len(_serialize_stdout(payload))
+        self.assertLessEqual(compact, MAX_TOTAL_JSON_BYTES)
+        self.assertGreater(wire, MAX_TOTAL_JSON_BYTES)
+        out = StdoutBytes()
+        err = StringIO()
+        with patch("knowledge_forge.portable_delivery_preview.preview", return_value=payload):
+            with patch.object(sys, "stdout", out), redirect_stderr(err):
+                code = main(["--mode", "OFF", "--host", "claude-code"])
+        self.assertEqual(code, 2)
+        self.assertEqual(out.buffer.getvalue(), b"")
+        self.assertIn("BLOCKED", err.getvalue())
+        self.assertNotIn("PRIVATE KNOWLEDGE", err.getvalue())
+
+    def test_no_partial_bytes_on_exact_cap_boundary(self):
+        from unittest.mock import patch
+        from io import BytesIO, StringIO
+        from contextlib import redirect_stderr
+        class StdoutBytes:
+            def __init__(self):
+                self.buffer = BytesIO()
+        payload = _result("codex-cli", "OFF", "NO_FORGE_CALLS", None, [])
+        wire = _serialize_stdout(payload)
+        with patch("knowledge_forge.portable_delivery_preview.preview", return_value=payload):
+            output = StdoutBytes()
+            with patch("knowledge_forge.portable_delivery_preview.MAX_TOTAL_JSON_BYTES", len(wire)):
+                with patch.object(sys, "stdout", output), redirect_stderr(StringIO()):
+                    self.assertEqual(main(["--host", "codex-cli", "--mode", "OFF"]), 0)
+            self.assertEqual(output.buffer.getvalue(), wire)
+            output = StdoutBytes()
+            err = StringIO()
+            with patch("knowledge_forge.portable_delivery_preview.MAX_TOTAL_JSON_BYTES", len(wire) - 1):
+                with patch.object(sys, "stdout", output), redirect_stderr(err):
+                    self.assertEqual(main(["--host", "codex-cli", "--mode", "OFF"]), 2)
+            self.assertEqual(output.buffer.getvalue(), b"")
+            self.assertIn("BLOCKED", err.getvalue())
+
 
 
 if __name__ == "__main__":

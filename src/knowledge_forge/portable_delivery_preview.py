@@ -39,6 +39,13 @@ class PortableDeliveryError(ValueError):
     """Refusal without source text, filenames, secrets or exception details."""
 
 
+def _serialize_stdout(out: dict[str, Any]) -> bytes:
+    """Canonical CLI UTF-8 wire bytes, including indentation and final LF."""
+    return (json.dumps(
+        out, sort_keys=True, indent=2, ensure_ascii=False, allow_nan=False,
+    ) + "\n").encode("utf-8")
+
+
 def _result(host: str, mode: str, state: str, question: str | None,
             items: list[dict[str, Any]], *, source_reverification_complete: bool = False) -> dict[str, Any]:
     return {
@@ -166,7 +173,7 @@ def preview(
             host, mode, "UNTRUSTED_DATA_PREVIEW_ONLY", question, items,
             source_reverification_complete=temporal.get("source_reverification_complete") is True,
         )
-        if len(json.dumps(out, ensure_ascii=False, sort_keys=True, allow_nan=False).encode("utf-8")) > MAX_TOTAL_JSON_BYTES:
+        if len(_serialize_stdout(out)) > MAX_TOTAL_JSON_BYTES:
             raise PortableDeliveryError("delivery byte cap exceeded")
         return out
     except Exception as exc:
@@ -208,7 +215,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 registry_supplier=lambda: _read_json(args.registry),
                 package_resolver=resolver, max_units=args.max_units,
             )
-        print(json.dumps(out, sort_keys=True, indent=2, ensure_ascii=False, allow_nan=False))
+        wire = _serialize_stdout(out)
+        if len(wire) > MAX_TOTAL_JSON_BYTES:
+            raise PortableDeliveryError("delivery byte cap exceeded")
+        # Perform exactly one complete write only after the full bound check.
+        sys.stdout.buffer.write(wire)
         return 0
     except (PortableDeliveryError, ValueError):
         print(json.dumps({"ok": False, "activation": "BLOCKED", "error": "delivery preview refused",
