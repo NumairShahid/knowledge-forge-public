@@ -124,6 +124,17 @@ def validate_windows_path(raw: object, label: str) -> str:
     return canonical
 
 
+def explicit_paths(prefix: Optional[str], state_root: Optional[str], manifest: Optional[str]) -> dict:
+    """Validate EXPLICIT path options; an omitted option (None) stays None.
+
+    P3B-CP1 R1: an explicitly supplied value -- including "" or whitespace --
+    is never treated as "not given" and never falls back to a default
+    location; it must pass validate_windows_path or the run is refused.
+    """
+    given = {"--prefix": prefix, "--state-root": state_root, "--manifest": manifest}
+    return {flag: (None if value is None else validate_windows_path(value, flag)) for flag, value in given.items()}
+
+
 def is_within(child: str, parent: str) -> bool:
     c, p = ntpath.normcase(child), ntpath.normcase(parent).rstrip("\\")
     return c == p or c.startswith(p + "\\")
@@ -558,6 +569,7 @@ def run(argv: Sequence[str], checks: Optional[HostChecks] = None) -> dict:
         raise Refusal("this installer is for native Windows; use bin/knowledge-forge-install-agent on POSIX")
     if sys.version_info < MIN_PYTHON:
         raise Refusal("Python 3.10 or newer is required")
+    explicit = explicit_paths(args.prefix, args.state_root, args.manifest)  # before any host check or write
     checks = checks or HostChecks()
 
     here = os.path.abspath(__file__)
@@ -588,11 +600,11 @@ def run(argv: Sequence[str], checks: Optional[HostChecks] = None) -> dict:
     launcher, launcher_source, pip_version = find_launcher()
 
     default_root = None
-    if not args.prefix or not args.state_root:
+    if explicit["--prefix"] is None or explicit["--state-root"] is None:
         default_root = ntpath.join(_localappdata_default(checks), "ToadAid", "knowledge-forge")
-    prefix = validate_windows_path(args.prefix, "--prefix") if args.prefix else default_root
-    state_root = validate_windows_path(args.state_root, "--state-root") if args.state_root else ntpath.join(default_root, "state")
-    manifest = validate_windows_path(args.manifest, "--manifest") if args.manifest else ntpath.join(state_root, "agent-integration.json")
+    prefix = explicit["--prefix"] if explicit["--prefix"] is not None else default_root
+    state_root = explicit["--state-root"] if explicit["--state-root"] is not None else ntpath.join(default_root, "state")
+    manifest = explicit["--manifest"] if explicit["--manifest"] is not None else ntpath.join(state_root, "agent-integration.json")
     bin_dir = ntpath.join(prefix, "bin")
     manifest_dir = ntpath.dirname(manifest)
     for other_label, other in (("--prefix", prefix), ("--state-root", state_root), ("--manifest directory", manifest_dir)):

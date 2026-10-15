@@ -57,6 +57,26 @@ class WindowsPathPolicyTests(unittest.TestCase):
             wi.validate_windows_path(None, "t")  # type: ignore[arg-type]
 
 
+class ExplicitPathOptionTests(unittest.TestCase):
+    """P3B-CP1 R1: omitted -> default; explicitly empty -> refuse (never a fallback)."""
+
+    def test_omitted_options_stay_unset_for_defaults(self):
+        self.assertEqual(wi.explicit_paths(None, None, None),
+                         {"--prefix": None, "--state-root": None, "--manifest": None})
+
+    def test_explicit_empty_or_blank_values_are_refused_for_every_path_option(self):
+        for flag in ("--prefix", "--state-root", "--manifest"):
+            for value in ("", " ", "\t"):
+                kwargs = {"prefix": None, "state_root": None, "manifest": None}
+                kwargs[{"--prefix": "prefix", "--state-root": "state_root", "--manifest": "manifest"}[flag]] = value
+                with self.subTest(flag=flag, value=value), self.assertRaisesRegex(wi.Refusal, flag):
+                    wi.explicit_paths(**kwargs)
+
+    def test_explicit_values_are_validated_not_defaulted(self):
+        out = wi.explicit_paths(r"C:\p", r"C:\s", r"C:\s\m.json")
+        self.assertEqual(out, {"--prefix": r"C:\p", "--state-root": r"C:\s", "--manifest": r"C:\s\m.json"})
+
+
 class EntrypointGenerationTests(unittest.TestCase):
     FAKE_LAUNCHER = b"MZ" + b"\0" * 64
 
@@ -387,8 +407,37 @@ class NativeWindowsInstallerTests(unittest.TestCase):
         self.assertIn("no pip", run.stderr)
         self.assertEqual(list(case.iterdir()), [])
 
+    def test_explicitly_empty_path_options_refuse_with_no_writes_anywhere(self):
+        # %LOCALAPPDATA% points at a private test folder, so a fallback to the default
+        # location would visibly write here; install mode (not --check-only) so a
+        # regression would really write.
+        for flag in ("--prefix", "--state-root", "--manifest"):
+            for value in ("", "   "):
+                with self.subTest(flag=flag, value=value):
+                    case = self._case()
+                    fake_local = case / "localappdata"
+                    fake_local.mkdir()
+                    env = dict(self.env, LOCALAPPDATA=str(fake_local))
+                    args = {"--prefix": str(case / "p"), "--state-root": str(case / "s"),
+                            "--manifest": str(case / "s" / "agent-integration.json")}
+                    args[flag] = value
+                    before = _tree(case)
+                    run = self._install(*[x for kv in args.items() for x in kv], env=env)
+                    self.assertEqual(run.returncode, 2, run.stdout)
+                    self.assertIn(flag, run.stderr)
+                    self.assertIn("non-empty", run.stderr)
+                    self.assertNotIn("READY", run.stdout)
+                    self.assertEqual(_tree(case), before, "an explicitly empty option must write nothing")
+        # an empty option alone must not silently install into the default location either
+        case = self._case()
+        fake_local = case / "localappdata"
+        fake_local.mkdir()
+        run = self._install("--prefix", "", env=dict(self.env, LOCALAPPDATA=str(fake_local)))
+        self.assertEqual(run.returncode, 2, run.stdout)
+        self.assertEqual(list(fake_local.iterdir()), [], "fell back to the default %LOCALAPPDATA% prefix")
+
     def test_unknown_and_malformed_flags_are_rejected(self):
-        for args in (["--bogus"], ["--prefix"], ["--check"], ["--prefix", ""]):
+        for args in (["--bogus"], ["--prefix"], ["--check"]):
             with self.subTest(args=args):
                 self.assertEqual(self._install(*args).returncode, 2)
 
