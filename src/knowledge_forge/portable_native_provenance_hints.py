@@ -171,11 +171,23 @@ def _ancestor_metadata(path: str, home: str) -> list[dict[str, Any]]:
         if label == 'OUTSIDE_HOME_REDACTED':
             break
         info = current.lstat()
+        is_dir = stat.S_ISDIR(info.st_mode)
+        is_link = stat.S_ISLNK(info.st_mode)
+        # Linux symlink mode bits (commonly 0777) do not grant ordinary
+        # directory write permission. Interpret write bits for directories only.
+        # Even a 0775 directory is a mode hint, NOT proof of effective access:
+        # group membership, ACLs, mount policy and races are unverified.
         results.append({'directory_label': label, 'owner_uid': info.st_uid,
                         'mode_octal': format(stat.S_IMODE(info.st_mode), '04o'),
-                        'group_or_world_writable': bool(info.st_mode & 0o022),
-                        'is_symlink': stat.S_ISLNK(info.st_mode),
-                        'is_directory': stat.S_ISDIR(info.st_mode)})
+                        'directory_mode_group_or_world_write_bits_set': (
+                            bool(info.st_mode & 0o022) if is_dir else None),
+                        'mode_interpretation': (
+                            'DIRECTORY_BITS_HINT_NOT_EFFECTIVE_ACCESS' if is_dir else
+                            'SYMLINK_MODE_NOT_WRITE_PERMISSION' if is_link else
+                            'NON_DIRECTORY_NOT_ACCESS_ATTESTATION'),
+                        'effective_write_access_verified': False,
+                        'is_symlink': is_link,
+                        'is_directory': is_dir})
         if label == '$HOME':
             break
         if current.parent == current:
@@ -265,6 +277,10 @@ def provenance_hints(host: str, *, search_path: str | None = None,
             for item in chain[:MAX_SYMLINKS]],
         'installation_layout_hint': _layout_hint(resolved, home, host),
         'ancestor_directory_metadata': ancestors,
+        'intermediate_directory_symlink_observed': any(x['is_symlink'] for x in ancestors),
+        'intermediate_symlink_target_stability_verified': False,
+        'effective_directory_write_access_verified': False,
+        'installation_path_integrity_verified': False,
         'static_elf_dependency_name_hints': hint,
         'executable_bytes_read': usage[0],
         'file_size_bytes': before.st_size,

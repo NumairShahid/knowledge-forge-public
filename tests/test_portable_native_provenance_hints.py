@@ -89,7 +89,61 @@ class ProvenanceHintTests(unittest.TestCase):
             self.assertTrue(got['ancestor_directory_metadata'])
             self.assertEqual(got['ancestor_directory_metadata'][-1]['directory_label'], '$HOME')
             self.assertTrue(all('owner_uid' in x for x in got['ancestor_directory_metadata']))
+            self.assertTrue(all('effective_write_access_verified' in x for x in got['ancestor_directory_metadata']))
+            self.assertFalse(got['installation_path_integrity_verified'])
+            self.assertFalse(got['effective_directory_write_access_verified'])
             self.assertTrue(entry.is_symlink())
+
+    def test_intermediate_symlink_0777_not_reported_as_writable_directory(self):
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            actual = root / '.codex/packages/standalone/version-1'
+            self._file(actual, 'bin/codex')
+            link = root / '.codex/packages/standalone/current'
+            link.symlink_to('version-1', target_is_directory=True)
+            (root / 'codex').symlink_to(str(link / 'bin/codex'))
+            got = provenance_hints('codex-cli', search_path=folder, home=folder)
+            self.assertEqual(got['state'], 'PASSIVE_STATIC_HINTS_NOT_ATTESTATION')
+            entry = next(x for x in got['ancestor_directory_metadata']
+                         if x['directory_label'].endswith('/current'))
+            self.assertTrue(entry['is_symlink'])
+            self.assertFalse(entry['is_directory'])
+            self.assertIsNone(entry['directory_mode_group_or_world_write_bits_set'])
+            self.assertEqual(entry['mode_interpretation'], 'SYMLINK_MODE_NOT_WRITE_PERMISSION')
+            self.assertFalse(entry['effective_write_access_verified'])
+            self.assertTrue(got['intermediate_directory_symlink_observed'])
+            self.assertFalse(got['intermediate_symlink_target_stability_verified'])
+            self.assertFalse(got['installation_path_integrity_verified'])
+            self.assertFalse(got['native_launch_authorized'])
+
+    def test_group_writable_directory_bits_are_a_hint_not_access_proof(self):
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            parent = root / '.local/share/claude/versions'
+            parent.mkdir(parents=True)
+            parent.chmod(0o775)
+            self._file(root, '.local/share/claude/versions/2.1.296')
+            (root / 'claude').symlink_to(str(parent / '2.1.296'))
+            got = provenance_hints('claude-code', search_path=folder, home=folder)
+            entry = next(x for x in got['ancestor_directory_metadata']
+                         if x['directory_label'].endswith('/versions'))
+            self.assertTrue(entry['is_directory'])
+            self.assertTrue(entry['directory_mode_group_or_world_write_bits_set'])
+            self.assertEqual(entry['mode_interpretation'], 'DIRECTORY_BITS_HINT_NOT_EFFECTIVE_ACCESS')
+            self.assertFalse(entry['effective_write_access_verified'])
+            self.assertFalse(got['effective_directory_write_access_verified'])
+            self.assertFalse(got['installation_path_integrity_verified'])
+            self.assertFalse(got['package_provenance_verified'])
+            self.assertNotIn('group_or_world_writable', entry)
+
+    def test_non_symlink_install_path_still_not_attested(self):
+        with TemporaryDirectory() as folder:
+            self._file(Path(folder), 'codex')
+            got = provenance_hints('codex-cli', search_path=folder, home=folder)
+            self.assertFalse(got['intermediate_directory_symlink_observed'])
+            self.assertFalse(got['intermediate_symlink_target_stability_verified'])
+            self.assertFalse(got['installation_path_integrity_verified'])
+            self.assertFalse(got['safe_to_activate_hooks'])
 
     def test_missing_and_unsafe_candidate_are_nonexecution(self):
         with TemporaryDirectory() as folder:

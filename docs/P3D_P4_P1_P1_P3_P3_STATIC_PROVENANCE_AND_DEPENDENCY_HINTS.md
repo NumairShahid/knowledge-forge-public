@@ -10,6 +10,29 @@ The new module reads only the first executable on the existing PATH, up to 16 di
 
 `DT_NEEDED` strings are labels in a binary, **not** evidence of which libraries the loader would select, whether transitive dependencies resolve, whether `dlopen` or bundled assets are needed, or whether a binary is statically linked. `NO_DYNAMIC_SEGMENT_OBSERVED` is not proof of a statically linked program. Layout descriptions for `$HOME/.local/share/claude/versions/…` and `$HOME/.codex/packages/standalone/…` are just path-pattern hints, **not proof of official package provenance, authenticity, signatures or update integrity**. A first-on-PATH candidate may differ from a future execution target. No package files, installer manifests, credentials or host settings are read.
 
+## R1 precision repair: directory permissions versus symlink metadata
+
+The original ancestor inventory displayed `group_or_world_writable=true` for a
+Linux symlink with nominal `0777` mode. **Symlink mode bits are not normal
+write-access permissions for the target or its containing directory.** R1
+replaces that ambiguous field with
+`directory_mode_group_or_world_write_bits_set`: a Boolean for real directories
+and `null` for symlinks or other non-directories. Each ancestor also has an
+explicit `mode_interpretation` and `effective_write_access_verified=false`.
+
+A genuine group-writable directory such as `0775` still returns a `true`
+**directory mode-bit hint**. It does not prove another principal can write:
+actual group membership, ACLs, mount permissions and races remain untested.
+An intermediate installation-path symlink such as Codex's
+`$HOME/.codex/packages/standalone/current` is recorded separately as
+`intermediate_directory_symlink_observed=true` while
+`intermediate_symlink_target_stability_verified=false`. All successful
+results report `effective_directory_write_access_verified=false` and
+`installation_path_integrity_verified=false`; no target pinning or
+provenance attestation is implied. These are passive `lstat` observations,
+not a resolution race defense. No limits, hooks, host calls or files outside
+the existing three-file PR scope change.
+
 ## Reproduce without native execution
 
 ```bash
