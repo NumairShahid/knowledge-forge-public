@@ -27,6 +27,24 @@ class NativeExecutableInventoryError(ValueError):
     """Inventory input or a candidate violates a bounded passive-read rule."""
 
 
+# Stable refusal categories only. Never print exception messages or raw
+# candidate paths on failed inventory; those may expose private home layout.
+LINK_REFUSALS = {
+    'symlink cycle': 'SYMLINK_CYCLE',
+    'symlink depth limit': 'SYMLINK_DEPTH_LIMIT',
+    'empty symlink': 'EMPTY_SYMLINK_TARGET',
+    'symlink limit': 'SYMLINK_DEPTH_LIMIT',
+}
+FILE_REFUSALS = {
+    'candidate not regular file': 'NOT_REGULAR_FILE',
+    'candidate empty': 'EMPTY_FILE',
+    'candidate exceeds size bound': 'FILE_EXCEEDS_INVENTORY_LIMIT',
+    'candidate not executable': 'NOT_EXECUTABLE_FILE',
+    'file grew beyond limit': 'FILE_EXCEEDS_INVENTORY_LIMIT',
+    'candidate identity changed during read': 'IDENTITY_CHANGED_DURING_READ',
+}
+
+
 def _display(path: str, home: str) -> str:
     """Show paths useful to operator without printing the username/home root."""
     root = os.path.normpath(home)
@@ -122,8 +140,12 @@ def _bounded_digest(filename: str, *, max_bytes: int) -> dict[str, Any]:
     fd = os.open(filename, flags)
     try:
         start = os.fstat(fd)
-        if not stat.S_ISREG(start.st_mode) or start.st_size <= 0 or start.st_size > max_bytes:
-            raise NativeExecutableInventoryError('candidate not a bounded regular file')
+        if not stat.S_ISREG(start.st_mode):
+            raise NativeExecutableInventoryError('candidate not regular file')
+        if start.st_size <= 0:
+            raise NativeExecutableInventoryError('candidate empty')
+        if start.st_size > max_bytes:
+            raise NativeExecutableInventoryError('candidate exceeds size bound')
         if not (start.st_mode & 0o111):
             raise NativeExecutableInventoryError('candidate not executable')
         h = hashlib.sha256()
@@ -189,9 +211,23 @@ def inventory(host: str, *, search_path: str | None = None,
         return result
     try:
         resolved, chain = _links(candidate)
-        identity = _bounded_digest(resolved, max_bytes=max_bytes)
-    except (OSError, NativeExecutableInventoryError):
+    except NativeExecutableInventoryError as error:
         result['state'] = 'BLOCKED_CANDIDATE_NOT_PROVEN'
+        result['refusal_category'] = LINK_REFUSALS.get(str(error), 'SYMLINK_VALIDATION_FAILED')
+        return result
+    except OSError:
+        result['state'] = 'BLOCKED_CANDIDATE_NOT_PROVEN'
+        result['refusal_category'] = 'SYMLINK_METADATA_UNAVAILABLE'
+        return result
+    try:
+        identity = _bounded_digest(resolved, max_bytes=max_bytes)
+    except NativeExecutableInventoryError as error:
+        result['state'] = 'BLOCKED_CANDIDATE_NOT_PROVEN'
+        result['refusal_category'] = FILE_REFUSALS.get(str(error), 'FILE_VALIDATION_FAILED')
+        return result
+    except OSError:
+        result['state'] = 'BLOCKED_CANDIDATE_NOT_PROVEN'
+        result['refusal_category'] = 'FILE_OPEN_READ_OR_STAT_UNAVAILABLE'
         return result
     result['state'] = 'PASSIVE_FILE_IDENTITY_ONLY'
     result['path_from_PATH'] = _display(candidate, home)

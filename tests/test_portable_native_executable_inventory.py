@@ -78,6 +78,70 @@ class NativeExecutableInventoryTests(unittest.TestCase):
             file.chmod(0o600)
             self.assertEqual(inventory('claude-code', search_path=scratch)['state'], 'UNRESOLVED_NO_EXECUTION')
 
+    def test_oversized_candidate_classified_without_hash_or_path(self):
+        with TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            self._make_candidate(root, 'codex', b'not-code' * 20)
+            result = inventory('codex-cli', search_path=scratch, max_bytes=8)
+            self.assertEqual(result['state'], 'BLOCKED_CANDIDATE_NOT_PROVEN')
+            self.assertEqual(result['refusal_category'], 'FILE_EXCEEDS_INVENTORY_LIMIT')
+            self.assertNotIn('executable_file_identity', result)
+            self.assertNotIn('resolved_executable_path', result)
+            self.assertFalse(result['native_launch_authorized'])
+
+    def test_empty_candidate_classified_no_native_execution(self):
+        with TemporaryDirectory() as scratch:
+            self._make_candidate(Path(scratch), 'codex', b'')
+            result = inventory('codex-cli', search_path=scratch)
+            self.assertEqual(result['state'], 'BLOCKED_CANDIDATE_NOT_PROVEN')
+            self.assertEqual(result['refusal_category'], 'EMPTY_FILE')
+
+    def test_symlink_cycle_category_without_path_disclosure(self):
+        with TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            first = root / 'codex'
+            first.symlink_to('next')
+            (root / 'next').symlink_to('codex')
+            with patch('knowledge_forge.portable_native_executable_inventory.shutil.which', return_value=str(first)):
+                result = inventory('codex-cli', search_path=scratch)
+            self.assertEqual(result['state'], 'BLOCKED_CANDIDATE_NOT_PROVEN')
+            self.assertEqual(result['refusal_category'], 'SYMLINK_CYCLE')
+            self.assertNotIn(scratch, json.dumps(result))
+
+    def test_symlink_depth_category(self):
+        with TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            for i in range(18):
+                (root / ('link-' + str(i))).symlink_to('link-' + str(i+1))
+            (root / 'link-18').symlink_to('codex')
+            start = root / 'link-0'
+            with patch('knowledge_forge.portable_native_executable_inventory.shutil.which', return_value=str(start)):
+                result = inventory('codex-cli', search_path=scratch)
+            self.assertEqual(result['refusal_category'], 'SYMLINK_DEPTH_LIMIT')
+
+    def test_unavailable_file_and_link_are_distinct_safe_categories(self):
+        from knowledge_forge import portable_native_executable_inventory as mod
+        with TemporaryDirectory() as scratch:
+            found = self._make_candidate(Path(scratch), 'codex')
+            with patch.object(mod, '_bounded_digest', side_effect=PermissionError('/private/secret')):
+                result = inventory('codex-cli', search_path=scratch)
+            self.assertEqual(result['refusal_category'], 'FILE_OPEN_READ_OR_STAT_UNAVAILABLE')
+            with patch.object(mod, '_links', side_effect=PermissionError('/private/secret')):
+                result = inventory('codex-cli', search_path=scratch)
+            self.assertEqual(result['refusal_category'], 'SYMLINK_METADATA_UNAVAILABLE')
+            self.assertNotIn('/private/secret', json.dumps(result))
+            self.assertTrue(found.exists())
+
+    def test_changed_during_digest_distinct_and_not_success(self):
+        from knowledge_forge import portable_native_executable_inventory as mod
+        with TemporaryDirectory() as scratch:
+            self._make_candidate(Path(scratch), 'codex')
+            with patch.object(mod, '_bounded_digest', side_effect=NativeExecutableInventoryError('candidate identity changed during read')):
+                result = inventory('codex-cli', search_path=scratch)
+            self.assertEqual(result['refusal_category'], 'IDENTITY_CHANGED_DURING_READ')
+            self.assertFalse(result['native_launch_authorized'])
+            self.assertNotIn('executable_file_identity', result)
+
     def test_unknown_host_and_bad_limits_refused(self):
         for name in ('', 'unknown', 'claude --version', None, True):
             with self.subTest(name=str(name)), self.assertRaises(NativeExecutableInventoryError):

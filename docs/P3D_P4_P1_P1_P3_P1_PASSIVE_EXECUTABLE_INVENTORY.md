@@ -12,6 +12,26 @@ The module may report `PASSIVE_FILE_IDENTITY_ONLY`, `UNRESOLVED_NO_EXECUTION`, o
 
 **Critical missing evidence:** executable interpreter chain beyond the first shebang/ELF-loader hint, JavaScript imports, dynamically loaded native libraries, runtime package provenance, package files, symlink-parent directory permissions, and any transient host process identity remain **UNVERIFIED**. This is deliberately not a complete runtime dependency tree, and it does not authorize mounting a binary into Bubblewrap.
 
+## R1: bounded refusal diagnosis for Codex
+
+The first TNG run found a `codex` PATH candidate but refused its file proof as
+`BLOCKED_CANDIDATE_NOT_PROVEN`. This is a **valid fail-closed result**, not a
+runtime claim. The original code combined all symlink, size, permission and
+identity problems under one state. R1 adds an allowlisted `refusal_category`
+only when blocked. Stable possible categories include `FILE_EXCEEDS_INVENTORY_LIMIT`,
+`EMPTY_FILE`, `NOT_REGULAR_FILE`, `NOT_EXECUTABLE_FILE`,
+`IDENTITY_CHANGED_DURING_READ`, `FILE_OPEN_READ_OR_STAT_UNAVAILABLE`,
+`SYMLINK_CYCLE`, `SYMLINK_DEPTH_LIMIT`, `EMPTY_SYMLINK_TARGET`,
+`SYMLINK_METADATA_UNAVAILABLE`, and generic validation refusals.
+
+These categories expose neither the raw exception message nor a refused
+candidate path or content. R1 retains the **256 MiB cap**, read-only
+`O_NOFOLLOW` file opening, same `PATH` first candidate, one final executable
+read, 16-link limit, no native execution and no package inspection. A category
+is diagnostic evidence only; it cannot certify a binary, dependency chain,
+provenance or authorize a native host. A positive inventory remains
+`PASSIVE_FILE_IDENTITY_ONLY` and is not elevated to runtime attestation.
+
 ## TNG execution (existing source checkout)
 
 ```bash
