@@ -81,3 +81,54 @@ def skip_linux_account_module_on_windows(module_name: str) -> None:
             f"{module_name} is a Linux-only review module (imports pwd/grp); "
             "it is never imported by native Windows consumer/authoring entrypoints"
         )
+
+
+# --- P3B-CP1 R2: upstream portable-native (P4/P6/P7) modules on native Windows ---
+# These modules passively inspect *POSIX* host executables and Linux kernel
+# namespaces. On native Windows they never resolve an executable or reach a
+# namespace probe; they fail closed (UNRESOLVED/BLOCKED, every authority flag
+# false). That fail-closed behaviour is asserted on Windows by
+# tests/test_portable_native_windows_fail_closed.py. Each skip below names the
+# exact Linux primitive the skipped test needs; none of them skips on Linux.
+
+skip_posix_executable_fixture_on_windows = unittest.skipIf(
+    NATIVE_WINDOWS,
+    "builds an extensionless POSIX executable fixture (chmod 0o700) and expects shutil.which() "
+    "plus POSIX mode bits (0o111 set, 0o002 clear) to resolve it; native Windows which() needs a "
+    "PATHEXT extension and reports .exe files as mode 0o777, so the Linux-native module fails "
+    "closed there (asserted in test_portable_native_windows_fail_closed.py)",
+)
+
+skip_without_os_pread = unittest.skipUnless(
+    hasattr(os, "pread"),
+    "patches or reads through os.pread, which native Windows Python does not provide",
+)
+
+skip_linux_proc_namespaces_on_windows = unittest.skipIf(
+    NATIVE_WINDOWS,
+    "reads Linux /proc/self/ns/* namespace inodes and stages a /tmp canary for the bubblewrap "
+    "probe; native Windows has neither, and the module fails closed there (asserted in "
+    "test_portable_native_windows_fail_closed.py)",
+)
+
+skip_posix_owner_fixture_on_windows = unittest.skipIf(
+    NATIVE_WINDOWS,
+    "the hook fixture root must be owned by os.getuid() (POSIX ownership); native Windows has no "
+    "os.getuid, so stage_fixture refuses with a typed NativeHookFixtureError (asserted in "
+    "test_portable_native_windows_fail_closed.py)",
+)
+
+skip_posix_shebang_host_on_windows = unittest.skipIf(
+    NATIVE_WINDOWS,
+    "the fake native host is a '#!/usr/bin/env python3' script that native Windows cannot execute; "
+    "the credential/loader env allowlist is asserted on every OS by a subprocess.run mock in "
+    "test_portable_native_windows_fail_closed.py",
+)
+
+POSIX_PATH_LABEL_SKIP_REASON = (
+    "asserts POSIX ('/'-separated) $HOME path labels; the module builds labels with os.path, "
+    "which is ntpath on native Windows, where the module never resolves an executable and so "
+    "never emits a label"
+)
+
+skip_posix_path_labels_on_windows = unittest.skipIf(NATIVE_WINDOWS, POSIX_PATH_LABEL_SKIP_REASON)

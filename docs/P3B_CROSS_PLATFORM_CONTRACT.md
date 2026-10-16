@@ -102,3 +102,10 @@ merges, policy-grant widening or system provisioning from the agent.
 CP0 does **not** claim native Windows compatibility, macOS parity, a security
 boundary, operator provisioning, authenticated approval or a usable Windows
 installer. Update public compatibility claims only after real target OS proofs.
+
+## Native Windows test skips
+
+Every native Windows skip is named by the exact host capability it needs, lives in
+`tests/_platform_support.py`, and never skips on Linux. The P3B-CP1 R2 table of skips
+for the upstream Linux-native portable modules, with the Windows fail-closed tests
+that replace them, is in `docs/P3B_CP1_WINDOWS_TEST_SKIPS.md`.
